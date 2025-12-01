@@ -1,1 +1,24 @@
 *.csv
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# Virtual Environment (venv)
+venv/
+env/
+ENV/
+
+# IDEs
+.vscode/
+.idea/
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+*.log
+
+# Environment
+.env
