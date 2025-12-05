@@ -28,17 +28,17 @@ st.set_page_config(
 # Custom CSS
 st.markdown("""
 <style>
-    /* 隐藏 Streamlit 默认元素 */
+    /* hide Streamlit elements */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     
-    /* 主容器 */
+    /* main */
     .main {
         max-width: 1200px;
         margin: 0 auto;
     }
     
-    /* Header 样式 */
+    /* Header  */
     .main-header {
         text-align: center;
         padding: 2rem 1rem;
@@ -61,7 +61,7 @@ st.markdown("""
         opacity: 0.95;
     }
     
-    /* Hero 图片 */
+    /* Hero  */
     .hero-section {
         position: relative;
         height: 250px;
@@ -91,7 +91,7 @@ st.markdown("""
         text-align: center;
     }
     
-    /* 状态标签 */
+    /* statuss */
     .status-success {
         color: #28a745;
         font-weight: bold;
@@ -104,7 +104,7 @@ st.markdown("""
         font-size: 1.1rem;
     }
     
-    /* 目的地卡片 */
+    /* destination card */
     .destination-card {
         background: white;
         border-radius: 12px;
@@ -170,7 +170,7 @@ st.markdown("""
         color: #333;
     }
     
-    /* 链接样式 */
+    /* link */
     .destination-links {
         display: flex;
         gap: 1rem;
@@ -196,19 +196,19 @@ st.markdown("""
 
 def get_city_image_url(city_name, country_code):
     """
-    获取城市图片 URL (使用 Unsplash)
+    use unsplash
     """
-    # Unsplash Source - 免费，无需 API key
+    # Unsplash Source 
     query = f"{city_name} {country_code} landmark"
     encoded_query = quote(query)
     return f"https://source.unsplash.com/800x400/?{encoded_query}"
 
 def get_wikipedia_excerpt(city_name, country_code):
     """
-    获取维基百科简介 - 多种尝试策略
+    acquuire wikipedia
     """
     try:
-        # 尝试1: 直接用城市名
+        # use city name
         url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{city_name.replace(' ', '_')}"
         response = requests.get(url, timeout=3)
         
@@ -221,7 +221,7 @@ def get_wikipedia_excerpt(city_name, country_code):
                     excerpt = excerpt[:297] + "..."
                 return excerpt
         
-        # 尝试2: 搜索 API
+        # use wikipedia API
         search_url = "https://en.wikipedia.org/w/api.php"
         search_params = {
             'action': 'query',
@@ -434,6 +434,89 @@ if search_button:
                     not_found_count = sum(1 for msg in status.values() if "❌" in msg)
                     if not_found_count > 0:
                         st.info(f"ℹ️ {not_found_count} item(s) not found in our database. Results based on {3-not_found_count} available match(es).")
+                    
+                    # Overall feedback section
+                    st.markdown("---")
+                    st.markdown("### 📊 Rate Your Experience")
+                    st.markdown("Help us improve by sharing your feedback!")
+                    
+                    with st.form("overall_feedback", clear_on_submit=True):
+                        col1, col2 = st.columns([1, 1])
+                        
+                        with col1:
+                            st.markdown("**How satisfied are you with these recommendations?**")
+                            rating = st.radio(
+                                "Rating:",
+                                ["😍 Love them!", "😊 Pretty good", "😐 It's okay", "😞 Not satisfied"],
+                                label_visibility="collapsed"
+                            )
+                        
+                        with col2:
+                            st.markdown("**Overall rating:**")
+                            stars = st.slider(
+                                "Stars:",
+                                min_value=1,
+                                max_value=5,
+                                value=4,
+                                label_visibility="collapsed"
+                            )
+                            st.markdown(f"{'⭐' * stars}")
+                        
+                        st.markdown("**Any suggestions or comments?** (Optional)")
+                        comments = st.text_area(
+                            "Comments:",
+                            placeholder="Tell us what you think, or how we can improve...",
+                            label_visibility="collapsed",
+                            height=100
+                        )
+                        
+                        submitted = st.form_submit_button("📤 Submit Feedback", use_container_width=True, type="primary")
+                        
+                        if submitted:
+                            # Save feedback to file
+                            import json
+                            from datetime import datetime
+                            from pathlib import Path
+                            
+                            # Create feedback directory if not exists
+                            feedback_dir = Path("data/feedback")
+                            feedback_dir.mkdir(parents=True, exist_ok=True)
+                            
+                            # Prepare feedback data
+                            feedback_data = {
+                                "timestamp": datetime.now().isoformat(),
+                                "inputs": {
+                                    "movie": movie_input,
+                                    "book": book_input,
+                                    "music": music_input
+                                },
+                                "search_status": status,
+                                "recommendations": [
+                                    {
+                                        "rank": r["rank"],
+                                        "name": r.get("name"),
+                                        "country": r.get("country"),
+                                        "score": r["score"]
+                                    }
+                                    for r in results
+                                ],
+                                "feedback": {
+                                    "satisfaction": rating,
+                                    "stars": stars,
+                                    "comments": comments if comments else None
+                                }
+                            }
+                            
+                            # Save to JSONL file
+                            feedback_file = feedback_dir / "user_feedback.jsonl"
+                            with open(feedback_file, "a", encoding="utf-8") as f:
+                                f.write(json.dumps(feedback_data, ensure_ascii=False) + "\n")
+                            
+                            st.success("✅ Thank you for your feedback! Your input helps us improve the recommendation system.")
+                            st.balloons()
+                            
+                            # Show confirmation
+                            st.info(f"💾 Your feedback has been saved. Total feedback count: {sum(1 for _ in open(feedback_file))}")
                 
                 else:
                     st.warning("⚠️ No recommendations found. Please try different titles.")
