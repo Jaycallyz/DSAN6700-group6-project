@@ -426,44 +426,45 @@ def _demo() -> None:
             for media_type, msg in status.items():
                 print(f"  {media_type.capitalize()}: {msg}")
             
-            if not results:
-                print("\n❌ No recommendations found. Try different titles.")
-                
-                # 提供建议（三种都提供）
-                print("\n💡 Suggestions:")
+            # 显示推荐结果
+            if results:
+                print(f"\n🌍 Top {len(results)} Recommended Destinations:")
+                for r in results:
+                    name = r.get("name", "")
+                    country = r.get("country", "")
+                    score = r["score"]
+                    print(f"  {r['rank']}. {name}, {country} (score: {score:.4f})")
+            else:
+                print("\n⚠️  Only 1 media found, recommendations may be less accurate.")
+            
+            # 为未找到的标题提供建议（无论有没有推荐结果）
+            has_not_found = any("❌" in msg for msg in status.values())
+            if has_not_found:
+                print("\n💡 Suggestions for titles not found:")
                 
                 # Movie suggestions
                 if "❌" in status.get("movie", ""):
-                    movie_sugg = engine.suggest_titles("movie", movie, 3)
+                    movie_sugg = engine.suggest_titles("movie", movie, 5)
                     if movie_sugg:
                         print(f"  🎬 Movies: {', '.join(movie_sugg)}")
                     else:
-                        print(f"  🎬 Movies: No suggestions found for '{movie}'")
+                        print(f"  🎬 Movies: No matches found for '{movie}'")
                 
                 # Book suggestions
                 if "❌" in status.get("book", ""):
-                    book_sugg = engine.suggest_titles("book", book, 3)
+                    book_sugg = engine.suggest_titles("book", book, 5)
                     if book_sugg:
                         print(f"  📚 Books: {', '.join(book_sugg)}")
                     else:
-                        print(f"  📚 Books: No suggestions found for '{book}'")
+                        print(f"  📚 Books: No matches found for '{book}'")
                 
                 # Music suggestions
                 if "❌" in status.get("music", ""):
-                    music_sugg = engine.suggest_titles("music", music, 3)
+                    music_sugg = engine.suggest_titles("music", music, 5)
                     if music_sugg:
                         print(f"  🎵 Music: {', '.join(music_sugg)}")
                     else:
-                        print(f"  🎵 Music: No suggestions found for '{music}'")
-                
-                continue
-            
-            print(f"\n🌍 Top {len(results)} Recommended Destinations:")
-            for r in results:
-                name = r.get("name", "")
-                country = r.get("country", "")
-                score = r["score"]
-                print(f"  {r['rank']}. {name}, {country} (score: {score:.4f})")
+                        print(f"  🎵 Music: No matches found for '{music}'")
         
         except ValueError as e:
             print(f"❌ Error: {e}")
