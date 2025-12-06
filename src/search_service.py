@@ -1,11 +1,23 @@
 # src/search_service.py
 
 import os
+import logging
 from functools import lru_cache
 from typing import List, Dict, Literal, Tuple, Optional
 
 import numpy as np
 import pandas as pd
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('travel_recommender.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 MediaType = Literal["movie", "book", "music"]
 
@@ -43,42 +55,53 @@ class RecommendationEngine:
     """
 
     def __init__(self) -> None:
+        logger.info("Initializing RecommendationEngine")
+        
         # ---- Load embeddings ----
+        logger.info("Loading embeddings...")
         self.dest_embeddings = self._load_embeddings(DEST_EMB_PATH, allow_missing=False)
+        logger.info(f"Loaded destination embeddings: shape={self.dest_embeddings.shape}")
+        
         self.movie_embeddings = self._load_embeddings(MOVIE_EMB_PATH, allow_missing=True)
+        logger.info(f"Loaded movie embeddings: shape={self.movie_embeddings.shape}")
+        
         self.book_embeddings = self._load_embeddings(BOOK_EMB_PATH, allow_missing=True)
+        logger.info(f"Loaded book embeddings: shape={self.book_embeddings.shape}")
+        
         self.music_embeddings = self._load_embeddings(MUSIC_EMB_PATH, allow_missing=True)
+        logger.info(f"Loaded music embeddings: shape={self.music_embeddings.shape}")
 
         # ---- Load metadata ----
-        # Destinations metadata is required: used to label FAISS results
+        logger.info("Loading metadata CSVs...")
         self.dest_meta = self._load_metadata(DEST_META_PATH, required=True)
+        logger.info(f"Loaded {len(self.dest_meta)} destinations")
 
-        # Media metadata
         self.movie_meta = self._load_metadata(MOVIE_META_PATH)
         self.book_meta = self._load_metadata(BOOK_META_PATH)
         self.music_meta = self._load_metadata(MUSIC_META_PATH)
 
         # Normalize destination embeddings for cosine similarity
+        logger.info("Normalizing destination embeddings...")
         self._normalize_embeddings()
 
         # ---- Build lookup tables ----
-        # Movies: title / original_title
+        logger.info("Building lookup tables...")
         self.movie_lookup = self._build_lookup(
             self.movie_meta,
             ["title", "original_title"],
         )
 
-        # Books: title (and original_title if present)
         self.book_lookup = self._build_lookup(
             self.book_meta,
             ["title", "original_title"],
         )
 
-        # Music
         self.music_lookup = self._build_lookup(
             self.music_meta,
             ["track_name", "track_id"],
         )
+        
+        logger.info("RecommendationEngine initialized successfully")
 
     # ------------------------------------------------------------------
     # Loading helpers
@@ -86,23 +109,33 @@ class RecommendationEngine:
 
     @staticmethod
     def _load_embeddings(path: str, allow_missing: bool) -> np.ndarray:
+        """Load embeddings from .npz file"""
         if not os.path.exists(path):
             if allow_missing:
+                logger.warning(f"Embeddings not found at {path}, using empty array")
                 return np.empty((0, 0), dtype="float32")
+            logger.error(f"Required embeddings not found at {path}")
             raise FileNotFoundError(f"Embeddings not found at {path}")
-        # Load from .npz format
+        
+        logger.debug(f"Loading embeddings from {path}")
         loaded = np.load(path)
         emb = loaded['embeddings']
         if emb.ndim != 2:
+            logger.error(f"Invalid embeddings shape at {path}: {emb.shape}")
             raise ValueError(f"Expected 2D embeddings at {path}, got shape {emb.shape}")
         return emb.astype("float32")
 
     @staticmethod
     def _load_metadata(path: str, required: bool = False) -> pd.DataFrame:
+        """Load metadata CSV file"""
         if not os.path.exists(path):
             if required:
+                logger.error(f"Required metadata CSV not found at {path}")
                 raise FileNotFoundError(f"Metadata CSV not found at {path}")
+            logger.warning(f"Optional metadata CSV not found at {path}")
             return pd.DataFrame()
+        
+        logger.debug(f"Loading metadata from {path}")
         return pd.read_csv(path)
 
     def _normalize_embeddings(self) -> None:
@@ -111,6 +144,7 @@ class RecommendationEngine:
             norms = np.linalg.norm(self.dest_embeddings, axis=1, keepdims=True)
             norms = np.maximum(norms, 1e-12)  # Avoid division by zero
             self.dest_embeddings = self.dest_embeddings / norms
+            logger.debug("Destination embeddings normalized")
 
     # ------------------------------------------------------------------
     # Lookup construction
@@ -120,12 +154,6 @@ class RecommendationEngine:
     def _build_lookup(df: pd.DataFrame, title_columns: List[str]) -> Dict[str, int]:
         """
         Build case-insensitive mapping from one or more columns to row index.
-
-        For each row, for each of the given columns that exist:
-            key = lowercased string value
-            value = row index
-
-        Later we resolve user input by lowercasing and looking up here.
         """
         if df.empty:
             return {}
@@ -140,6 +168,8 @@ class RecommendationEngine:
                 val = str(row[col]).strip()
                 if val:
                     lookup[val.lower()] = i
+        
+        logger.debug(f"Built lookup table with {len(lookup)} entries")
         return lookup
 
     # ------------------------------------------------------------------
@@ -153,27 +183,21 @@ class RecommendationEngine:
         top_k: int = 5,
     ) -> List[Dict]:
         """
-        Given:
-            media_type: "movie" | "book" | "music"
-            media_title: user-facing title (movie name, book title, or track_name)
-        Return:
-            top_k recommended destinations as list of dicts:
-            [
-              {
-                 "rank": 1,
-                 "score": 0.17,
-                 "name": ...,
-                 "city": ...,
-                 "country": ...,
-                 "region": ...,
-                 "description": ...,
-                 ...
-              },
-              ...
-            ]
+        Recommend destinations based on media preference.
+        
+        Args:
+            media_type: "movie", "book", or "music"
+            media_title: Title to search for
+            top_k: Number of recommendations to return
+            
+        Returns:
+            List of destination dictionaries with rank, score, and metadata
         """
+        logger.info(f"Recommending from {media_type}: '{media_title}' (top_k={top_k})")
+        
         media_vec = self._get_media_vector(media_type, media_title)
         if media_vec is None:
+            logger.warning(f"No embedding found for {media_type}: '{media_title}'")
             return []
 
         # Normalize query vector
@@ -189,7 +213,10 @@ class RecommendationEngine:
         top_indices = np.argsort(scores)[::-1][:top_k]
         top_scores = scores[top_indices]
         
-        return self._format_results(top_indices, top_scores)
+        results = self._format_results(top_indices, top_scores)
+        logger.info(f"Found {len(results)} recommendations for '{media_title}'")
+        
+        return results
 
     def suggest_titles(
         self,
@@ -199,8 +226,9 @@ class RecommendationEngine:
     ) -> List[str]:
         """
         Fuzzy suggestions when no exact match is found.
-        Looks for partial matches (contains) in appropriate columns.
         """
+        logger.debug(f"Suggesting titles for {media_type}: '{query}'")
+        
         query_l = query.strip().lower()
         if not query_l:
             return []
@@ -232,10 +260,12 @@ class RecommendationEngine:
         if isinstance(mask, bool):
             return []
 
-        # Use first valid column for display
         display_col = valid_cols[0]
         matches = df.loc[mask, display_col].astype(str).drop_duplicates().head(max_suggestions)
-        return matches.tolist()
+        suggestions = matches.tolist()
+        
+        logger.debug(f"Found {len(suggestions)} suggestions")
+        return suggestions
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -246,16 +276,7 @@ class RecommendationEngine:
         media_type: MediaType,
         media_title: str,
     ) -> Optional[np.ndarray]:
-        """
-        Map user-provided title -> embedding row.
-
-        Movies:
-          - match by title / original_title
-        Books:
-          - match by title / (and original_title if present)
-        Music:
-          - match by track_name (preferred) or track_id (fallback)
-        """
+        """Map user-provided title -> embedding row."""
         key = media_title.strip().lower()
         if not key:
             return None
@@ -279,11 +300,7 @@ class RecommendationEngine:
         indices: np.ndarray,
         scores: np.ndarray,
     ) -> List[Dict]:
-        """
-        Turn FAISS output into a list of rich destination records.
-        Assumes DEST_META_PATH = destination_sample_wikipedia.csv
-        with columns: name, country, city, region, description, ...
-        """
+        """Turn search results into formatted destination records."""
         results: List[Dict] = []
         for rank, (idx, score) in enumerate(zip(indices, scores), start=1):
             idx = int(idx)
@@ -302,22 +319,22 @@ class RecommendationEngine:
 
 
 # ----------------------------------------------------------------------
-# Global accessor for reuse (esp. in Streamlit / Hugging Face Spaces)
+# Global accessor for reuse
 # ----------------------------------------------------------------------
 
 @lru_cache(maxsize=1)
 def get_engine() -> RecommendationEngine:
     """
     Cached singleton engine.
-
-    Ensures heavy resources (embeddings, FAISS index) load only once
-    per process.
+    
+    Ensures heavy resources load only once per process.
     """
+    logger.info("Getting engine instance")
     return RecommendationEngine()
 
 
 # ----------------------------------------------------------------------
-# Simple CLI demo for local testing
+# Simple CLI demo
 # ----------------------------------------------------------------------
 
 def _demo() -> None:
@@ -352,7 +369,6 @@ def _demo() -> None:
 
         print()
         for r in results:
-            # destination_sample_wikipedia.csv: name, city, country, region, description
             name = r.get("name", "")
             city = r.get("city", "")
             country = r.get("country", "")
