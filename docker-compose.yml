@@ -1,0 +1,10 @@
+version: "3.9"
+
+services:
+  web:
+    build: .
+    container_name: travel-recommender-web
+    ports:
+      - "8501:8501"
+    # volumes:
+    #   - ./data:/app/data     # optional: mount local data
