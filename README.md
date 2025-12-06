@@ -13,8 +13,6 @@ Discover your next travel destination through the cultural media you love - movi
 - **Jiachen Gao**
 - **Zihao Huang**
 
-**Institution**: Georgetown University, Fall 2025
-
 ---
 
 ## 📖 Project Overview
@@ -60,7 +58,7 @@ This project uses **semantic embeddings** and **FAISS similarity search** to rec
 
 ```bash
 # Clone repository
-git clone <your-repo-url>
+git clone https://github.com/Jaycallyz/DSAN6700-group6-project.git
 cd DSAN6700-group6-project
 
 # Install dependencies
