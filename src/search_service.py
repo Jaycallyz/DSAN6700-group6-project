@@ -6,7 +6,6 @@ from typing import List, Dict, Literal, Tuple, Optional
 
 import numpy as np
 import pandas as pd
-import faiss
 
 MediaType = Literal["movie", "book", "music"]
 
@@ -17,16 +16,13 @@ DATA_DIR = os.path.join(BASE_DIR, "data")
 EMB_DIR = os.path.join(DATA_DIR, "embeddings")
 CLEAN_DIR = os.path.join(DATA_DIR, "clean_data")
 
-# Embeddings
-MOVIE_EMB_PATH = os.path.join(EMB_DIR, "movie_embeddings.npy")
-BOOK_EMB_PATH = os.path.join(EMB_DIR, "book_embeddings.npy")
-MUSIC_EMB_PATH = os.path.join(EMB_DIR, "music_embeddings.npy")
-DEST_EMB_PATH = os.path.join(EMB_DIR, "destination_embeddings.npy")
+# Embeddings (using .npz format for HF Spaces compatibility)
+MOVIE_EMB_PATH = os.path.join(EMB_DIR, "movie_embeddings.npz")
+BOOK_EMB_PATH = os.path.join(EMB_DIR, "book_embeddings.npz")
+MUSIC_EMB_PATH = os.path.join(EMB_DIR, "music_embeddings.npz")
+DEST_EMB_PATH = os.path.join(EMB_DIR, "destination_embeddings.npz")
 
-# FAISS index for destinations
-INDEX_PATH = os.path.join(EMB_DIR, "destinations_faiss_ip.index")
-
-# Cleaned metadata CSVs (✅ Updated to _processed files)
+# Cleaned metadata CSVs
 MOVIE_META_PATH = os.path.join(CLEAN_DIR, "movie_processed.csv")
 BOOK_META_PATH = os.path.join(CLEAN_DIR, "book_processed.csv")
 MUSIC_META_PATH = os.path.join(CLEAN_DIR, "music_processed.csv")
@@ -35,24 +31,15 @@ DEST_META_PATH = os.path.join(CLEAN_DIR, "destination_processed.csv")
 
 class RecommendationEngine:
     """
-    融合推荐引擎 (Fusion Recommendation Engine)
-    
-    用户输入：Movie + Book + Music (三个都要)
-    系统：融合三个 embeddings，推荐目的地
-    
-    Usage:
+    Core recommendation engine.
+
+    Frontend usage:
+
         from src.search_service import get_engine
         engine = get_engine()
-        
-        results, status = engine.recommend_from_combined_media(
-            movie_title="Inception",
-            book_title="Harry Potter and the Philosopher's Stone",
-            music_title="Bohemian Rhapsody",
-            top_k=5
-        )
-        
-        # status = {"movie": "✅ 找到: Inception", "book": "✅ 找到: ...", ...}
-        # results = [{"rank": 1, "score": 0.85, "name": "Paris", ...}, ...]
+        results = engine.recommend_from_media("movie", "Inception", top_k=5)
+
+    Returns: list of dicts with destination info + similarity score.
     """
 
     def __init__(self) -> None:
@@ -63,18 +50,35 @@ class RecommendationEngine:
         self.music_embeddings = self._load_embeddings(MUSIC_EMB_PATH, allow_missing=True)
 
         # ---- Load metadata ----
+        # Destinations metadata is required: used to label FAISS results
         self.dest_meta = self._load_metadata(DEST_META_PATH, required=True)
+
+        # Media metadata
         self.movie_meta = self._load_metadata(MOVIE_META_PATH)
         self.book_meta = self._load_metadata(BOOK_META_PATH)
         self.music_meta = self._load_metadata(MUSIC_META_PATH)
 
-        # ---- Load FAISS index ----
-        self.index = self._load_index()
+        # Normalize destination embeddings for cosine similarity
+        self._normalize_embeddings()
 
         # ---- Build lookup tables ----
-        self.movie_lookup = self._build_lookup(self.movie_meta, ["title", "original_title"])
-        self.book_lookup = self._build_lookup(self.book_meta, ["title", "original_title"])
-        self.music_lookup = self._build_lookup(self.music_meta, ["track_name", "track_id"])
+        # Movies: title / original_title
+        self.movie_lookup = self._build_lookup(
+            self.movie_meta,
+            ["title", "original_title"],
+        )
+
+        # Books: title (and original_title if present)
+        self.book_lookup = self._build_lookup(
+            self.book_meta,
+            ["title", "original_title"],
+        )
+
+        # Music
+        self.music_lookup = self._build_lookup(
+            self.music_meta,
+            ["track_name", "track_id"],
+        )
 
     # ------------------------------------------------------------------
     # Loading helpers
@@ -86,7 +90,9 @@ class RecommendationEngine:
             if allow_missing:
                 return np.empty((0, 0), dtype="float32")
             raise FileNotFoundError(f"Embeddings not found at {path}")
-        emb = np.load(path)
+        # Load from .npz format
+        loaded = np.load(path)
+        emb = loaded['embeddings']
         if emb.ndim != 2:
             raise ValueError(f"Expected 2D embeddings at {path}, got shape {emb.shape}")
         return emb.astype("float32")
@@ -99,19 +105,12 @@ class RecommendationEngine:
             return pd.DataFrame()
         return pd.read_csv(path)
 
-    def _load_index(self) -> faiss.Index:
-        if not os.path.exists(INDEX_PATH):
-            raise FileNotFoundError(
-                f"FAISS index not found at {INDEX_PATH}. "
-                f"Run `python src/build_faiss.py` to create it."
-            )
-        index = faiss.read_index(INDEX_PATH)
-        if self.dest_embeddings.size > 0 and index.ntotal != self.dest_embeddings.shape[0]:
-            raise ValueError(
-                f"Mismatch between FAISS index size ({index.ntotal}) "
-                f"and destination_embeddings rows ({self.dest_embeddings.shape[0]})."
-            )
-        return index
+    def _normalize_embeddings(self) -> None:
+        """Normalize destination embeddings for cosine similarity (L2 norm)"""
+        if self.dest_embeddings.size > 0:
+            norms = np.linalg.norm(self.dest_embeddings, axis=1, keepdims=True)
+            norms = np.maximum(norms, 1e-12)  # Avoid division by zero
+            self.dest_embeddings = self.dest_embeddings / norms
 
     # ------------------------------------------------------------------
     # Lookup construction
@@ -119,7 +118,15 @@ class RecommendationEngine:
 
     @staticmethod
     def _build_lookup(df: pd.DataFrame, title_columns: List[str]) -> Dict[str, int]:
-        """Build case-insensitive mapping from columns to row index."""
+        """
+        Build case-insensitive mapping from one or more columns to row index.
+
+        For each row, for each of the given columns that exist:
+            key = lowercased string value
+            value = row index
+
+        Later we resolve user input by lowercasing and looking up here.
+        """
         if df.empty:
             return {}
 
@@ -131,117 +138,58 @@ class RecommendationEngine:
         for i, row in df.iterrows():
             for col in valid_cols:
                 val = str(row[col]).strip()
-                if val and val.lower() != 'nan':
+                if val:
                     lookup[val.lower()] = i
         return lookup
 
     # ------------------------------------------------------------------
-    # 核心方法: 融合推荐
+    # Public API
     # ------------------------------------------------------------------
 
-    def recommend_from_combined_media(
+    def recommend_from_media(
         self,
-        movie_title: str,
-        book_title: str,
-        music_title: str,
-        weights: Optional[Tuple[float, float, float]] = None,
+        media_type: MediaType,
+        media_title: str,
         top_k: int = 5,
-    ) -> Tuple[List[Dict], Dict[str, str]]:
+    ) -> List[Dict]:
         """
-        融合推荐：同时使用 movie + book + music
-        
-        Args:
-            movie_title: 电影标题
-            book_title: 书籍标题
-            music_title: 音乐标题
-            weights: 权重 (movie_weight, book_weight, music_weight)，默认 (1.0, 1.0, 1.0)
-            top_k: 返回前 k 个推荐
-            
-        Returns:
-            (results, status_info)
-            - results: 推荐目的地列表
-            - status_info: 每个媒体的查找状态
+        Given:
+            media_type: "movie" | "book" | "music"
+            media_title: user-facing title (movie name, book title, or track_name)
+        Return:
+            top_k recommended destinations as list of dicts:
+            [
+              {
+                 "rank": 1,
+                 "score": 0.17,
+                 "name": ...,
+                 "city": ...,
+                 "country": ...,
+                 "region": ...,
+                 "description": ...,
+                 ...
+              },
+              ...
+            ]
         """
-        if weights is None:
-            weights = (1.0, 1.0, 1.0)
-        
-        # 验证输入
-        if not movie_title or not movie_title.strip():
-            raise ValueError("Movie title cannot be empty")
-        if not book_title or not book_title.strip():
-            raise ValueError("Book title cannot be empty")
-        if not music_title or not music_title.strip():
-            raise ValueError("Music title cannot be empty")
-        
-        vectors = []
-        status_info = {}
-        
-        # 获取 movie embedding
-        movie_vec = self._get_media_vector("movie", movie_title)
-        if movie_vec is not None:
-            vectors.append(movie_vec)
-            status_info["movie"] = f"✅ Found: {movie_title}"
-        else:
-            status_info["movie"] = f"❌ Not found: {movie_title}"
-        
-        # 获取 book embedding
-        book_vec = self._get_media_vector("book", book_title)
-        if book_vec is not None:
-            vectors.append(book_vec)
-            status_info["book"] = f"✅ Found: {book_title}"
-        else:
-            status_info["book"] = f"❌ Not found: {book_title}"
-        
-        # 获取 music embedding
-        music_vec = self._get_media_vector("music", music_title)
-        if music_vec is not None:
-            vectors.append(music_vec)
-            status_info["music"] = f"✅ Found: {music_title}"
-        else:
-            status_info["music"] = f"❌ Not found: {music_title}"
-        
-        # 如果都没找到，返回空
-        if len(vectors) == 0:
-            return [], status_info
-        
-        # 智能权重调整（如果只找到部分）
-        if len(vectors) == 3:
-            weights_to_use = weights
-        elif len(vectors) == 2:
-            # 只找到2个，调整权重
-            if movie_vec is None:
-                weights_to_use = (weights[1], weights[2])  # book, music
-            elif book_vec is None:
-                weights_to_use = (weights[0], weights[2])  # movie, music
-            else:  # music_vec is None
-                weights_to_use = (weights[0], weights[1])  # movie, book
-        else:
-            # 只找到1个
-            weights_to_use = (1.0,)
-        
-        # 融合 embeddings（加权平均）
-        vectors_array = np.array(vectors, dtype="float32")
-        weights_array = np.array(weights_to_use, dtype="float32")
-        
-        # 归一化权重
-        weights_array = weights_array / weights_array.sum()
-        
-        # 加权平均
-        combined_vec = np.average(vectors_array, axis=0, weights=weights_array)
-        
-        # Normalize for cosine similarity
-        q = combined_vec.reshape(1, -1)
-        faiss.normalize_L2(q)
-        
-        # 搜索
-        scores, indices = self.index.search(q, top_k)
-        results = self._format_results(indices[0], scores[0])
-        
-        return results, status_info
+        media_vec = self._get_media_vector(media_type, media_title)
+        if media_vec is None:
+            return []
 
-    # ------------------------------------------------------------------
-    # 辅助方法
-    # ------------------------------------------------------------------
+        # Normalize query vector
+        q = media_vec.astype("float32").reshape(1, -1)
+        q_norm = np.linalg.norm(q)
+        if q_norm > 0:
+            q = q / q_norm
+
+        # Compute cosine similarity with all destinations
+        scores = np.dot(self.dest_embeddings, q.T).flatten()
+        
+        # Get top_k indices
+        top_indices = np.argsort(scores)[::-1][:top_k]
+        top_scores = scores[top_indices]
+        
+        return self._format_results(top_indices, top_scores)
 
     def suggest_titles(
         self,
@@ -249,7 +197,10 @@ class RecommendationEngine:
         query: str,
         max_suggestions: int = 5,
     ) -> List[str]:
-        """模糊搜索建议"""
+        """
+        Fuzzy suggestions when no exact match is found.
+        Looks for partial matches (contains) in appropriate columns.
+        """
         query_l = query.strip().lower()
         if not query_l:
             return []
@@ -275,22 +226,36 @@ class RecommendationEngine:
 
         mask = False
         for col in valid_cols:
-            col_mask = df[col].astype(str).str.lower().str.contains(query_l, na=False)
+            col_mask = df[col].astype(str).str.lower().str.contains(query_l)
             mask = col_mask if isinstance(mask, bool) else (mask | col_mask)
 
         if isinstance(mask, bool):
             return []
 
+        # Use first valid column for display
         display_col = valid_cols[0]
         matches = df.loc[mask, display_col].astype(str).drop_duplicates().head(max_suggestions)
         return matches.tolist()
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
 
     def _get_media_vector(
         self,
         media_type: MediaType,
         media_title: str,
     ) -> Optional[np.ndarray]:
-        """Map title to embedding."""
+        """
+        Map user-provided title -> embedding row.
+
+        Movies:
+          - match by title / original_title
+        Books:
+          - match by title / (and original_title if present)
+        Music:
+          - match by track_name (preferred) or track_id (fallback)
+        """
         key = media_title.strip().lower()
         if not key:
             return None
@@ -314,7 +279,11 @@ class RecommendationEngine:
         indices: np.ndarray,
         scores: np.ndarray,
     ) -> List[Dict]:
-        """Format FAISS results."""
+        """
+        Turn FAISS output into a list of rich destination records.
+        Assumes DEST_META_PATH = destination_sample_wikipedia.csv
+        with columns: name, country, city, region, description, ...
+        """
         results: List[Dict] = []
         for rank, (idx, score) in enumerate(zip(indices, scores), start=1):
             idx = int(idx)
@@ -333,143 +302,63 @@ class RecommendationEngine:
 
 
 # ----------------------------------------------------------------------
-# Global accessor
+# Global accessor for reuse (esp. in Streamlit / Hugging Face Spaces)
 # ----------------------------------------------------------------------
 
 @lru_cache(maxsize=1)
 def get_engine() -> RecommendationEngine:
-    """Cached singleton engine."""
+    """
+    Cached singleton engine.
+
+    Ensures heavy resources (embeddings, FAISS index) load only once
+    per process.
+    """
     return RecommendationEngine()
 
 
 # ----------------------------------------------------------------------
-# CLI demo
+# Simple CLI demo for local testing
 # ----------------------------------------------------------------------
-
-def _show_available_titles(engine: RecommendationEngine, n: int = 10) -> None:
-    """显示可用的标题（前 n 个）"""
-    print("\n" + "="*60)
-    print(f"Available Titles (showing first {n} from each category)")
-    print("="*60)
-    
-    # Movies
-    if not engine.movie_meta.empty and "title" in engine.movie_meta.columns:
-        print(f"\n🎬 Movies ({len(engine.movie_meta)} total):")
-        for i, title in enumerate(engine.movie_meta["title"].head(n), 1):
-            print(f"  {i}. {title}")
-    
-    # Books
-    if not engine.book_meta.empty and "title" in engine.book_meta.columns:
-        print(f"\n📚 Books ({len(engine.book_meta)} total):")
-        for i, title in enumerate(engine.book_meta["title"].head(n), 1):
-            print(f"  {i}. {title}")
-    
-    # Music
-    if not engine.music_meta.empty and "track_name" in engine.music_meta.columns:
-        print(f"\n🎵 Music ({len(engine.music_meta)} total):")
-        for i, track in enumerate(engine.music_meta["track_name"].head(n), 1):
-            artist = engine.music_meta.iloc[i-1].get("artists", "")
-            if artist:
-                print(f"  {i}. {track} - {artist}")
-            else:
-                print(f"  {i}. {track}")
-    
-    print("\n" + "="*60)
-
 
 def _demo() -> None:
     engine = get_engine()
-    print("\n" + "="*60)
-    print("Fusion Recommendation Demo")
-    print("="*60)
-    print("Enter Movie + Book + Music titles to get destination recommendations")
-    print()
-    print("💡 Tips:")
-    print("  - Type 'list' to see available titles")
-    print("  - Type 'q' to quit")
-    print()
+    print("Simple demo. Example:")
+    print("   media_type = movie | book | music")
 
     while True:
-        print("\n" + "-"*60)
-        movie = input("🎬 Movie title (or 'list'/'q'): ").strip()
-        
-        if movie.lower() == 'q':
+        media_type = input("\nEnter media type (movie/book/music or 'q' to quit): ").strip().lower()
+        if media_type == "q":
             break
-        
-        if movie.lower() == 'list':
-            _show_available_titles(engine)
+        if media_type not in ("movie", "book", "music"):
+            print("Invalid media type. Try again.")
             continue
-        
-        book = input("📚 Book title (or 'list'): ").strip()
-        if book.lower() == 'list':
-            _show_available_titles(engine)
+
+        title = input("Enter title: ").strip()
+        if not title:
+            print("Empty title, try again.")
             continue
-            
-        music = input("🎵 Music/Track name (or 'list'): ").strip()
-        if music.lower() == 'list':
-            _show_available_titles(engine)
-            continue
-        
-        if not movie or not book or not music:
-            print("❌ All three inputs are required!")
-            continue
-        
-        try:
-            results, status = engine.recommend_from_combined_media(
-                movie_title=movie,
-                book_title=book,
-                music_title=music,
-                top_k=5
-            )
-            
-            print("\n📊 Status:")
-            for media_type, msg in status.items():
-                print(f"  {media_type.capitalize()}: {msg}")
-            
-            # 显示推荐结果
-            if results:
-                print(f"\n🌍 Top {len(results)} Recommended Destinations:")
-                for r in results:
-                    name = r.get("name", "")
-                    country = r.get("country", "")
-                    score = r["score"]
-                    print(f"  {r['rank']}. {name}, {country} (score: {score:.4f})")
+
+        results = engine.recommend_from_media(media_type, title, top_k=5)
+        if not results:
+            print("No exact match found for that title.")
+            suggestions = engine.suggest_titles(media_type, title, max_suggestions=5)
+            if suggestions:
+                print("Did you mean:")
+                for s in suggestions:
+                    print(f" - {s}")
             else:
-                print("\n⚠️  Only 1 media found, recommendations may be less accurate.")
-            
-            # 为未找到的标题提供建议（无论有没有推荐结果）
-            has_not_found = any("❌" in msg for msg in status.values())
-            if has_not_found:
-                print("\n💡 Suggestions for titles not found:")
-                
-                # Movie suggestions
-                if "❌" in status.get("movie", ""):
-                    movie_sugg = engine.suggest_titles("movie", movie, 5)
-                    if movie_sugg:
-                        print(f"  🎬 Movies: {', '.join(movie_sugg)}")
-                    else:
-                        print(f"  🎬 Movies: No matches found for '{movie}'")
-                
-                # Book suggestions
-                if "❌" in status.get("book", ""):
-                    book_sugg = engine.suggest_titles("book", book, 5)
-                    if book_sugg:
-                        print(f"  📚 Books: {', '.join(book_sugg)}")
-                    else:
-                        print(f"  📚 Books: No matches found for '{book}'")
-                
-                # Music suggestions
-                if "❌" in status.get("music", ""):
-                    music_sugg = engine.suggest_titles("music", music, 5)
-                    if music_sugg:
-                        print(f"  🎵 Music: {', '.join(music_sugg)}")
-                    else:
-                        print(f"  🎵 Music: No matches found for '{music}'")
-        
-        except ValueError as e:
-            print(f"❌ Error: {e}")
-        except Exception as e:
-            print(f"❌ Unexpected error: {e}")
+                print("No similar titles found in the sample dataset. Try another query.")
+            continue
+
+        print()
+        for r in results:
+            # destination_sample_wikipedia.csv: name, city, country, region, description
+            name = r.get("name", "")
+            city = r.get("city", "")
+            country = r.get("country", "")
+            score = r["score"]
+            loc = ", ".join([x for x in [city, country] if x])
+            print(f"{r['rank']}. {name} ({loc})  score={score:.4f}")
 
 
 if __name__ == "__main__":
