@@ -19,7 +19,6 @@ The engine is used by `app.py` via:
     from search_service import get_engine
     engine = get_engine()
 
-Author: DSAN 6700 – Group 6
 """
 
 from __future__ import annotations
