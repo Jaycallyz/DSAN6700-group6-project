@@ -18,11 +18,13 @@ This project builds a **semantic-based travel recommendation system** that sugge
 
 ## System Architecture
 **User Input → Embeddings → Fusion → Similarity Search → Recommendations**
+
 - Frontend: Streamlit
 - Backend: RecommendationEngine class
 - Data Layer: preprocessed CSV + NPZ embeddings
 - APIs: Wikipedia (descriptions), GeoNames (coords), Pexels (images)
 
+```text
 ┌───────────────────────────────────────────────┐
 │                 User Input                    │
 │        (Movie • Book • Music selections)      │
@@ -60,6 +62,7 @@ This project builds a **semantic-based travel recommendation system** that sugge
 │  - Explanation (semantic match)               │
 │  - Image card (Pexels API)                    │
 └───────────────────────────────────────────────┘
+```
 
 This diagram summarizes the end-to-end flow from user cultural preferences
 to destination recommendations.
