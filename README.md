@@ -23,6 +23,48 @@ This project builds a **semantic-based travel recommendation system** that sugge
 - Data Layer: preprocessed CSV + NPZ embeddings
 - APIs: Wikipedia (descriptions), GeoNames (coords), Pexels (images)
 
+┌───────────────────────────────────────────────┐
+│                 User Input                    │
+│        (Movie • Book • Music selections)      │
+└───────────────────────────────────────────────┘
+                      │
+                      ▼
+┌───────────────────────────────────────────────┐
+│               Text Processing                 │
+│     - Clean text                              │
+│     - Merge metadata fields                   │
+└───────────────────────────────────────────────┘
+                      │
+                      ▼
+┌───────────────────────────────────────────────┐
+│         Sentence-BERT Embedding (384d)        │
+│  v = w_m · v_m + w_b · v_b + w_s · v_s        │
+└───────────────────────────────────────────────┘
+                      │
+                      ▼
+┌───────────────────────────────────────────────┐
+│             Multimodal Fusion                 │
+│      (FAISS index locally / NumPy fallback)   │
+└───────────────────────────────────────────────┘
+                      │
+                      ▼
+┌───────────────────────────────────────────────┐
+│               Top-K Retrieval                 │
+│         (Rank destinations by similarity)     │
+└───────────────────────────────────────────────┘
+                      │
+                      ▼
+┌───────────────────────────────────────────────┐
+│                Display Results                │
+│  - City name                                  │
+│  - Explanation (semantic match)               │
+│  - Image card (Pexels API)                    │
+└───────────────────────────────────────────────┘
+
+This diagram summarizes the end-to-end flow from user cultural preferences
+to destination recommendations.
+
+
 ## Dataset
 Data is available on Google Drive: https://drive.google.com/drive/folders/1_zfbeevmwvxwBrZBVJR-y3mmF0MMEPMX?usp=drive_link
 
